@@ -52,14 +52,19 @@ jobs:
       - name: Archive production artifacts
         shell: bash
         run: |
+          set -e
           APP_DIR="${{ steps.findpkg.outputs.dir }}"
-          if [ -d "$APP_DIR/build" ]; then
-            cd "$APP_DIR"
-            zip -r ../build-artifact.zip build -x "*.git*"
+          OUT="$GITHUB_WORKSPACE/build-artifact.zip"
+          rm -f "$OUT"
+          cd "$APP_DIR"
+          if [ -d "build" ]; then
+            # Typical React/Vite/Next static export
+            zip -r "$OUT" build -x "*.git*"
           else
-            cd "$APP_DIR"
-            zip -r ../build-artifact.zip . -x "*.git*"
+            # No build dir? zip the app dir itself (server apps, SSR, etc.)
+            zip -r "$OUT" . -x "*.git*"
           fi
+          ls -lh "$OUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -77,6 +82,9 @@ jobs:
         with:
           name: node-app
           path: .
+
+      - name: Verify artifact
+        run: ls -la build-artifact.zip
 
       - name: Unzip artifact
         run: unzip -o build-artifact.zip
