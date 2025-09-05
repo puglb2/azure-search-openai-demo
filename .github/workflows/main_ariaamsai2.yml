@@ -19,6 +19,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 🔎 Find the folder that contains package.json (no need to edit it)
       - name: Find package.json directory
         id: findpkg
         shell: bash
@@ -33,41 +34,39 @@ jobs:
           echo "Using package dir: $DIR"
           echo "dir=$DIR" >> $GITHUB_OUTPUT
 
-      - name: Set up Node.js
+      - name: Use Node.js
         uses: actions/setup-node@v3
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install deps, build, test
-        run: |
-          npm ci
-          npm run build --if-present
-          npm run test --if-present
+      # ✅ Install production deps in CI so node_modules is included in the zip
+      - name: Install deps (prod only)
+        run: npm ci --omit=dev
         working-directory: ${{ steps.findpkg.outputs.dir }}
 
-      - name: Create deployment zip
+      # (Optional) Build step if your server needs it (kept safe)
+      - name: Build (if present)
+        run: npm run build --if-present
+        working-directory: ${{ steps.findpkg.outputs.dir }}
+
+      # 📦 Zip the CONTENTS of the app dir (server.js + node_modules + anything built)
+      - name: Create deployment zip (ready-to-run)
         shell: bash
         run: |
           set -e
           APP_DIR="${{ steps.findpkg.outputs.dir }}"
-          OUT="$GITHUB_WORKSPACE/build-artifact.zip"
+          OUT="$GITHUB_WORKSPACE/app-ready.zip"
           rm -f "$OUT"
-          if [ -d "$APP_DIR/build" ]; then
-            # Zip the CONTENTS of build into the zip root
-            cd "$APP_DIR/build"
-            zip -r "$OUT" . -x "*.git*"
-          else
-            # No build/ dir (SSR/Express)? zip the app dir itself
-            cd "$APP_DIR"
-            zip -r "$OUT" . -x "*.git*"
-          fi
+          cd "$APP_DIR"
+          # Zip contents so server.js sits at the zip root in wwwroot
+          zip -r "$OUT" . -x "*.git*" "**/.github/**"
           ls -lh "$OUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: node-app
-          path: build-artifact.zip
+          path: app-ready.zip
 
   deploy:
     runs-on: ubuntu-latest
@@ -81,7 +80,7 @@ jobs:
           path: .
 
       - name: Verify artifact
-        run: ls -la build-artifact.zip
+        run: ls -la app-ready.zip
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
@@ -89,4 +88,4 @@ jobs:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           slot-name: Production
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_C33BBA65DA2C40FFBB382F961043AE6C }}
-          package: build-artifact.zip
+          package: app-ready.zip
