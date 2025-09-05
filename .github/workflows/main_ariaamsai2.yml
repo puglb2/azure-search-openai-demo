@@ -52,4 +52,5 @@ jobs:
           app-name: 'ariaamsai2'
           slot-name: 'Production'
           package: .
+
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_C33BBA65DA2C40FFBB382F961043AE6C }}
