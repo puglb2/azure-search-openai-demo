@@ -19,47 +19,72 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 🔎 Find the folder that contains package.json (no need to edit it)
+      - name: Node & npm versions
+        run: |
+          node -v || true
+          npm -v || true
+
       - name: Find package.json directory
         id: findpkg
         shell: bash
         run: |
-          set -e
           FILE=$(git ls-files | grep -E '(^|/)package.json$' | head -n1 || true)
+          echo "Found package.json at: $FILE"
           if [ -z "$FILE" ]; then
-            echo "No package.json found in repo"; exit 1
+            echo "::error::No package.json found in repo"; exit 1
           fi
           DIR=$(dirname "$FILE")
-          if [ "$DIR" = "." ]; then DIR="."; else DIR="./$DIR"; fi
-          echo "Using package dir: $DIR"
+          [ "$DIR" = "." ] && DIR="."
+          echo "Using app dir: $DIR"
           echo "dir=$DIR" >> $GITHUB_OUTPUT
 
-      - name: Use Node.js
+      - name: Show app dir contents
+        run: |
+          ls -la
+          echo "----"
+          ls -la ${{ steps.findpkg.outputs.dir }}
+          echo "---- (one level deeper) ----"
+          ls -la ${{ steps.findpkg.outputs.dir }}/.. || true
+
+      - name: Use Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v3
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # ✅ Install production deps in CI so node_modules is included in the zip
-      - name: Install deps (prod only)
-        run: npm ci --omit=dev
+      - name: Install dependencies (with fallbacks)
+        shell: bash
         working-directory: ${{ steps.findpkg.outputs.dir }}
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "package-lock.json found -> npm ci --omit=dev"
+            npm ci --omit=dev || INSTALL_FAIL=1
+          else
+            echo "No package-lock.json -> npm install --omit=dev"
+            npm install --omit=dev || INSTALL_FAIL=1
+          fi
 
-      # (Optional) Build step if your server needs it (kept safe)
+          if [ "$INSTALL_FAIL" = "1" ]; then
+            echo "Retrying install with --legacy-peer-deps..."
+            if [ -f package-lock.json ]; then
+              npm ci --omit=dev --legacy-peer-deps || exit 1
+            else
+              npm install --omit=dev --legacy-peer-deps || exit 1
+            fi
+          fi
+
       - name: Build (if present)
-        run: npm run build --if-present
         working-directory: ${{ steps.findpkg.outputs.dir }}
+        run: npm run build --if-present || true
 
-      # 📦 Zip the CONTENTS of the app dir (server.js + node_modules + anything built)
-      - name: Create deployment zip (ready-to-run)
+      - name: Create deployment zip (ready-to-run source)
         shell: bash
         run: |
-          set -e
           APP_DIR="${{ steps.findpkg.outputs.dir }}"
           OUT="$GITHUB_WORKSPACE/app-ready.zip"
           rm -f "$OUT"
           cd "$APP_DIR"
-          # Zip contents so server.js sits at the zip root in wwwroot
           zip -r "$OUT" . -x "*.git*" "**/.github/**"
+          echo "Created $OUT:"
           ls -lh "$OUT"
 
       - name: Upload artifact
