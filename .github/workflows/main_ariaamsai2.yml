@@ -33,10 +33,6 @@ jobs:
           echo "Using package dir: $DIR"
           echo "dir=$DIR" >> $GITHUB_OUTPUT
 
-      - name: Show detected directory contents
-        run: ls -la
-        working-directory: ${{ steps.findpkg.outputs.dir }}
-
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
@@ -49,19 +45,20 @@ jobs:
           npm run test --if-present
         working-directory: ${{ steps.findpkg.outputs.dir }}
 
-      - name: Archive production artifacts
+      - name: Create deployment zip
         shell: bash
         run: |
           set -e
           APP_DIR="${{ steps.findpkg.outputs.dir }}"
           OUT="$GITHUB_WORKSPACE/build-artifact.zip"
           rm -f "$OUT"
-          cd "$APP_DIR"
-          if [ -d "build" ]; then
-            # Typical React/Vite/Next static export
-            zip -r "$OUT" build -x "*.git*"
+          if [ -d "$APP_DIR/build" ]; then
+            # Zip the CONTENTS of build into the zip root
+            cd "$APP_DIR/build"
+            zip -r "$OUT" . -x "*.git*"
           else
-            # No build dir? zip the app dir itself (server apps, SSR, etc.)
+            # No build/ dir (SSR/Express)? zip the app dir itself
+            cd "$APP_DIR"
             zip -r "$OUT" . -x "*.git*"
           fi
           ls -lh "$OUT"
@@ -86,13 +83,10 @@ jobs:
       - name: Verify artifact
         run: ls -la build-artifact.zip
 
-      - name: Unzip artifact
-        run: unzip -o build-artifact.zip
-
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           slot-name: Production
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_C33BBA65DA2C40FFBB382F961043AE6C }}
-          package: .
+          package: build-artifact.zip
