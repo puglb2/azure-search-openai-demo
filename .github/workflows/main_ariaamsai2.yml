@@ -8,6 +8,7 @@ on:
 env:
   AZURE_WEBAPP_NAME: ariaamsai2
   NODE_VERSION: '20'
+  NODE_OPTIONS: --max-old-space-size=4096
 
 jobs:
   build:
@@ -19,10 +20,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Node & npm versions
-        run: |
-          node -v || true
-          npm -v || true
+      - name: Use Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
 
       - name: Find package.json directory
         id: findpkg
@@ -35,63 +37,53 @@ jobs:
           fi
           DIR=$(dirname "$FILE")
           [ "$DIR" = "." ] && DIR="."
-          echo "Using app dir: $DIR"
           echo "dir=$DIR" >> $GITHUB_OUTPUT
+          echo "Using app dir: $DIR"
 
       - name: Show app dir contents
         run: |
           ls -la
           echo "----"
-          ls -la ${{ steps.findpkg.outputs.dir }}
-          echo "---- (one level deeper) ----"
-          ls -la ${{ steps.findpkg.outputs.dir }}/.. || true
+          ls -la ${{ steps.findpkg.outputs.dir }} || true
 
-      - name: Use Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v3
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install dependencies (with fallbacks)
-        shell: bash
+      - name: Install dependencies
         working-directory: ${{ steps.findpkg.outputs.dir }}
-        run: |
-          if [ -f package-lock.json ]; then
-            echo "package-lock.json found -> npm ci --omit=dev"
-            npm ci --omit=dev || INSTALL_FAIL=1
-          else
-            echo "No package-lock.json -> npm install --omit=dev"
-            npm install --omit=dev || INSTALL_FAIL=1
-          fi
-
-          if [ "$INSTALL_FAIL" = "1" ]; then
-            echo "Retrying install with --legacy-peer-deps..."
-            if [ -f package-lock.json ]; then
-              npm ci --omit=dev --legacy-peer-deps || exit 1
-            else
-              npm install --omit=dev --legacy-peer-deps || exit 1
-            fi
-          fi
+        run: npm ci || npm install
 
       - name: Build (if present)
         working-directory: ${{ steps.findpkg.outputs.dir }}
         run: npm run build --if-present || true
 
-      - name: Create deployment zip (ready-to-run source)
+      - name: Determine deploy path
+        id: pickpath
         shell: bash
         run: |
           APP_DIR="${{ steps.findpkg.outputs.dir }}"
-          OUT="$GITHUB_WORKSPACE/app-ready.zip"
+          if [ -d "$APP_DIR/dist" ]; then
+            echo "deploy_path=$APP_DIR/dist" >> $GITHUB_OUTPUT
+          elif [ -d "$APP_DIR/build" ]; then
+            echo "deploy_path=$APP_DIR/build" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_path=$APP_DIR" >> $GITHUB_OUTPUT
+          fi
+          echo "Chosen deploy path: $(cat $GITHUB_OUTPUT | sed -n 's/.*deploy_path=//p')"
+
+      - name: Create deployment zip
+        shell: bash
+        run: |
+          DEPLOY_PATH="${{ steps.pickpath.outputs.deploy_path }}"
+          OUT="$GITHUB_WORKSPACE/app.zip"
           rm -f "$OUT"
-          cd "$APP_DIR"
-          zip -r "$OUT" . -x "*.git*" "**/.github/**"
-          echo "Created $OUT:"
+          cd "$DEPLOY_PATH"
+          # Zip the CONTENTS so they land at wwwroot root
+          zip -r "$OUT" . -x "*.git*" "**/.github/**" "**/node_modules/**"
           ls -lh "$OUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: node-app
-          path: app-ready.zip
+          path: app.zip
 
   deploy:
     runs-on: ubuntu-latest
@@ -105,7 +97,7 @@ jobs:
           path: .
 
       - name: Verify artifact
-        run: ls -la app-ready.zip
+        run: ls -la app.zip
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
@@ -113,4 +105,4 @@ jobs:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           slot-name: Production
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_C33BBA65DA2C40FFBB382F961043AE6C }}
-          package: app-ready.zip
+          package: app.zip
