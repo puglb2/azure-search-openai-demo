@@ -26,62 +26,42 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Find package.json directory
+      - name: Locate package.json
         id: findpkg
         shell: bash
         run: |
           FILE=$(git ls-files | grep -E '(^|/)package.json$' | head -n1 || true)
-          echo "Found package.json at: $FILE"
           if [ -z "$FILE" ]; then
-            echo "::error::No package.json found in repo"; exit 1
+            echo "::error::No package.json found"; exit 1
           fi
-          DIR=$(dirname "$FILE")
-          [ "$DIR" = "." ] && DIR="."
+          DIR=$(dirname "$FILE"); [ "$DIR" = "." ] && DIR="."
           echo "dir=$DIR" >> $GITHUB_OUTPUT
           echo "Using app dir: $DIR"
 
-      - name: Show app dir contents
-        run: |
-          ls -la
-          echo "----"
-          ls -la ${{ steps.findpkg.outputs.dir }} || true
-
-      - name: Install dependencies
+      - name: Install deps (dev + prod)
         working-directory: ${{ steps.findpkg.outputs.dir }}
         run: npm ci || npm install
 
-      - name: Build (if present)
+      - name: Build (Vite)
         working-directory: ${{ steps.findpkg.outputs.dir }}
-        run: npm run build --if-present || true
+        run: npm run build
 
-      - name: Determine deploy path
-        id: pickpath
+      - name: Create dist zip (contents at root)
         shell: bash
         run: |
-          APP_DIR="${{ steps.findpkg.outputs.dir }}"
-          if [ -d "$APP_DIR/dist" ]; then
-            echo "deploy_path=$APP_DIR/dist" >> $GITHUB_OUTPUT
-          elif [ -d "$APP_DIR/build" ]; then
-            echo "deploy_path=$APP_DIR/build" >> $GITHUB_OUTPUT
-          else
-            echo "deploy_path=$APP_DIR" >> $GITHUB_OUTPUT
+          DIST="${{ steps.findpkg.outputs.dir }}/dist"
+          if [ ! -d "$DIST" ]; then
+            echo "::error::No dist/ folder found after build"; exit 1
           fi
-          echo "Chosen deploy path: $(cat $GITHUB_OUTPUT | sed -n 's/.*deploy_path=//p')"
-
-      - name: Create deployment zip
-        shell: bash
-        run: |
-          DEPLOY_PATH="${{ steps.pickpath.outputs.deploy_path }}"
-          OUT="$GITHUB_WORKSPACE/app.zip"
-          rm -f "$OUT"
-          cd "$DEPLOY_PATH"
-          zip -r "$OUT" . -x "*.git*" "**/.github/**" "**/node_modules/**"
-          ls -lh "$OUT"
+          rm -f app.zip
+          cd "$DIST"
+          zip -r "$GITHUB_WORKSPACE/app.zip" . -x "*.git*" "**/.github/**" "**/node_modules/**"
+          ls -lh "$GITHUB_WORKSPACE/app.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: node-app
+          name: webapp-dist
           path: app.zip
 
   deploy:
@@ -92,13 +72,15 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: node-app
+          name: webapp-dist
           path: .
 
-      - name: Verify artifact
-        run: ls -la app.zip
+      - name: Small safety delay (avoid config/save overlap)
+        run: sleep 15
 
-      - name: Deploy to Azure Web App
+      - name: Deploy to Azure Web App (attempt 1)
+        id: deploy1
+        continue-on-error: true
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
@@ -106,3 +88,15 @@ jobs:
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_C33BBA65DA2C40FFBB382F961043AE6C }}
           package: app.zip
 
+      - name: Wait before retry
+        if: steps.deploy1.outcome == 'failure'
+        run: sleep 25
+
+      - name: Deploy to Azure Web App (attempt 2)
+        if: steps.deploy1.outcome == 'failure'
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          slot-name: Production
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_C33BBA65DA2C40FFBB382F961043AE6C }}
+          package: app.zip
