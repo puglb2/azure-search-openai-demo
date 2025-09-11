@@ -100,3 +100,4 @@ jobs:
           slot-name: Production
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_C33BBA65DA2C40FFBB382F961043AE6C }}
           package: app.zip
+
